@@ -31,7 +31,7 @@ neurons_per_hidden_layer = 256  # neurons per layer
 num_epochs = 15  # training epochs
 learning_rate = 0.001  # Adam LR
 dropout_rate = 0.2
-batch_size = 512
+batch_size = 128
 
 # Section 3: Training and testing
 
