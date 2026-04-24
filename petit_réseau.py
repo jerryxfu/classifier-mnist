@@ -11,13 +11,18 @@ from torchvision import datasets, transforms
 from torch.utils.data import DataLoader, Subset
 import matplotlib.pyplot as plt
 
-# 1. Define transformations (convert image to tensor and normalize)
+# 1. Device selection (use GPU if available)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
+
+# 2. Define transformations (convert image to tensor and normalize)
 transform = transforms.Compose([
     transforms.ToTensor(),
     transforms.Normalize((0.1307,), (0.3081,))
 ])
 
 # Section 2: Network configuration
+
 # Modify these parameters, then re-run from this cell onward.
 
 digits_to_identify = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]  # classes
@@ -25,8 +30,8 @@ num_hidden_layers = 2  # hidden layers
 neurons_per_hidden_layer = 256  # neurons per layer
 num_epochs = 15  # training epochs
 learning_rate = 0.001  # Adam LR
-dropout_rate = 0.2  # dropout regularization
-batch_size = 64
+dropout_rate = 0.2
+batch_size = 512
 
 # Section 3: Training and testing
 
@@ -54,7 +59,7 @@ test_loader = DataLoader(test_subset, batch_size=batch_size, shuffle=False)
 
 class FlexibleNet(nn.Module):
     def __init__(self, num_hidden_layers=1, hidden_size=128, output_size=10, dropout=0.2):
-        super(FlexibleNet, self).__init__()
+        super().__init__()
 
         self.layers = nn.ModuleList()
         self.batchnorms = nn.ModuleList()
@@ -74,6 +79,12 @@ class FlexibleNet(nn.Module):
         # Output layer (hidden_size -> output_size)
         self.output_layer = nn.Linear(hidden_size, output_size)
 
+        # Kaiming initialization (optimal for ReLU networks)
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, nonlinearity="relu")
+                nn.init.zeros_(m.bias)
+
     def forward(self, x):
         x = x.view(-1, 784)
 
@@ -90,10 +101,10 @@ class FlexibleNet(nn.Module):
 # Create model, loss, optimizer, and LR scheduler
 
 model = FlexibleNet(num_hidden_layers, neurons_per_hidden_layer,
-                    len(digits_to_identify), dropout_rate)
+                    len(digits_to_identify), dropout_rate).to(device)
 criterion = nn.CrossEntropyLoss()
-optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
+optimizer = optim.Adam(model.parameters(), lr=learning_rate)  # Adam >> SGD
+scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=2)
 
 # Training loop
 
@@ -102,6 +113,7 @@ for epoch in range(num_epochs):
     running_loss = 0.0
     num_batches = 0
     for images, labels in train_loader:
+        images, labels = images.to(device), labels.to(device)
         optimizer.zero_grad()
         outputs = model(images)
         loss = criterion(outputs, labels)
@@ -109,38 +121,36 @@ for epoch in range(num_epochs):
         optimizer.step()
         running_loss += loss.item()
         num_batches += 1
-    scheduler.step()
     avg_loss = running_loss / num_batches
-    print(f"Epoch {epoch + 1}/{num_epochs} — Avg loss: {avg_loss:.4f}")
+    scheduler.step(avg_loss)
+    current_lr = optimizer.param_groups[0]["lr"]
+    print(f"Epoch {epoch + 1}/{num_epochs} — Avg loss: {avg_loss:.4f} — LR: {current_lr:.6f}")
 
 # Evaluation
 
 model.eval()
 correct = 0
-with torch.no_grad():
-    for images, labels in test_loader:
-        outputs = model(images)
-        _, predicted = torch.max(outputs, 1)
-        correct += (predicted == labels).sum().item()
-
-accuracy = round(100 * correct / len(test_subset), 2)
-print(f"\nTest accuracy: {accuracy}%")
-
-# Show misclassified examples
-
 misclassified_images = []
 true_labels = []
 predicted_labels = []
 
 with torch.no_grad():
     for images, labels in test_loader:
+        images, labels = images.to(device), labels.to(device)
         outputs = model(images)
         _, predicted = torch.max(outputs, 1)
+        correct += (predicted == labels).sum().item()
+
         errors = (predicted != labels)
         if errors.any():
-            misclassified_images.extend(images[errors])
-            true_labels.extend(labels[errors])
-            predicted_labels.extend(predicted[errors])
+            misclassified_images.extend(images[errors].cpu())
+            true_labels.extend(labels[errors].cpu())
+            predicted_labels.extend(predicted[errors].cpu())
+
+accuracy = round(100 * correct / len(test_subset), 2)
+print(f"\nTest accuracy: {accuracy}%")
+
+# Show misclassified examples
 
 if len(misclassified_images) > 0:
     print(f"Misclassified images: {len(misclassified_images)}")
